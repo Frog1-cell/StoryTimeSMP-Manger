@@ -7,6 +7,7 @@ use tokio::runtime::Runtime;
 
 use crate::mods;
 use crate::ui;
+use console::Term;
 
 const CLIENT_REPO_URL: &str = "https://github.com/Frog1-cell/StoryTime-ServerKlient-Mods.git";
 const SERVER_REPO_URL: &str = "https://github.com/Frog1-cell/StoryTime-ServerBuild-Mods.git";
@@ -14,6 +15,10 @@ const TEMP_DIR: &str = ".storytime-mods-temp";
 
 /// Установка модов в выбранную папку Minecraft
 pub fn install(minecraft_path: &Path, clean_install: bool) {
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    ui::print_banner();
+    
     // Выбор типа сборки (клиентская или серверная)
     let repo_url = match ui::select_build_type() {
         Some(choice) => {
@@ -89,6 +94,10 @@ pub fn install(minecraft_path: &Path, clean_install: bool) {
 
     // Очистка временной папки
     fs::remove_dir_all(&repo_path).ok();
+    
+    println!("󰄬 Установка завершена!");
+    println!("󰝚 Нажмите Enter чтобы продолжить...");
+    let _ = std::io::stdin().read_line(&mut String::new());
 }
 
 /// Асинхронное скачивание репозитория

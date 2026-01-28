@@ -2,28 +2,38 @@ use inquire::{Select, Confirm, Text};
 use std::path::{Path, PathBuf};
 use std::fs;
 use dirs;
+use walkdir::WalkDir;
+use console::Term;
 
 /// Вывод баннера приложения
 pub fn print_banner() {
     println!(r#"
-███████╗████████╗ ██████╗ ██████╗ ██╗   ██╗████████╗██╗███╗   ███╗███████╗
-██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗╚██╗ ██╔╝╚══██╔══╝██║████╗ ████║██╔════╝
-███████╗   ██║   ██║   ██║██████╔╝ ╚████╔╝    ██║   ██║██╔████╔██║█████╗
-╚════██║   ██║   ██║   ██║██╔══██╗  ╚██╔╝     ██║   ██║██║╚██╔╝██║██╔══╝
-███████╗   ██║   ╚██████╔╝██║  ██║   ██║      ██║   ██║██║ ╚═╝ ██║███████╗
-╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝╚═╝     ╚═╝╚══════╝
+███████╗████████╗███╗   ███╗
+██╔════╝╚══██╔══╝████╗ ████║
+███████╗   ██║   ██╔████╔██║
+╚════██║   ██║   ██║╚██╔╝██║
+███████║   ██║   ██║ ╚═╝ ██║
+╚══════╝   ╚═╝   ╚═╝     ╚═╝
+
+StoryTime Hub - Лаунчер для Minecraft
 "#);
 }
 
 /// Отображение главного меню
 pub fn main_menu() -> Option<String> {
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    print_banner();
+    
     let options = vec![
         "󰆽 Установить моды",
         "󱂵 Переустановить моды",
+        "󰚨 Загрузить моды с Modrinth",
+        "󰒓 Установить папку по умолчанию",
         "󰅖 Выйти",
     ];
 
-    Select::new("󰍽 Выберите действие:", options)
+    Select::new("󰝚 Выберите действие:", options)
         .prompt()
         .ok()
         .map(|s| s.to_string())
@@ -31,357 +41,332 @@ pub fn main_menu() -> Option<String> {
 
 /// Запрос папки Minecraft у пользователя
 pub fn ask_minecraft_folder() -> Option<PathBuf> {
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    print_banner();
+    
     let options = vec![
-        "󰝚 Автоматически найти (глубокий поиск)",
-        "󰩠 Ввести вручную",
+        "󰝚 Автоматический поиск (глубокий поиск)",
+        "󰒓 Ввести путь вручную",
         "󰅖 Отмена",
     ];
 
-    let choice = Select::new("󰍽 Как найти папку Minecraft?", options)
+    let choice = Select::new("󰝚 Как найти папку Minecraft?", options)
         .prompt()
         .ok()?;
 
     match choice {
-        "󰝚 Автоматически найти (глубокий поиск)" => find_minecraft_ultra_deep(),
-        "󰩠 Ввести вручную" => ask_path_manual(),
+        "󰝚 Автоматический поиск (глубокий поиск)" => find_minecraft_linux(),
+        "󰒓 Ввести путь вручную" => ask_path_manual(),
         _ => None,
     }
 }
 
-/// Ультра-глубокий поиск папок Minecraft
-fn find_minecraft_ultra_deep() -> Option<PathBuf> {
-    let mut minecraft_folders = Vec::new();
+/// Запрос папки Minecraft с предложением пути по умолчанию
+pub fn ask_minecraft_folder_with_default(default_path: Option<&PathBuf>) -> Option<PathBuf> {
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    print_banner();
     
-    // Получаем все возможные корневые директории для поиска
-    let search_roots = get_extended_search_roots();
-    
-    println!("󰆍 Ищу папки Minecraft...");
-    
-    // Многопоточный поиск в каждой корневой директории
-    for root in search_roots {
-        if root.exists() {
-            find_minecraft_recursive(&root, &mut minecraft_folders, 0, 8);
+    if let Some(default) = default_path {
+        let use_default = Confirm::new(&format!(
+            "󰝚 Использовать папку по умолчанию?\n{}",
+            default.display()
+        ))
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false);
+        
+        if use_default {
+            return Some(default.clone());
         }
     }
     
-    // Добавляем стандартные пути
-    add_standard_paths_extended(&mut minecraft_folders);
+    ask_minecraft_folder()
+}
+
+/// Глубокий поиск папок Minecraft на Linux
+fn find_minecraft_linux() -> Option<PathBuf> {
+    println!("󰇚 Ищу папки Minecraft...");
     
-    if minecraft_folders.is_empty() {
+    let mut found_folders = Vec::new();
+    
+    // Стандартные пути для различных лаунчеров на Linux
+    let search_paths = get_linux_search_paths();
+    
+    for base_path in search_paths {
+        if base_path.exists() {
+            find_minecraft_in_directory(&base_path, &mut found_folders);
+        }
+    }
+    
+    if found_folders.is_empty() {
         println!("󰅖 Папки Minecraft не найдены");
         return ask_path_manual();
     }
     
-    // Удаляем дубликаты и сортируем
-    minecraft_folders.sort_by(|a, b| {
-        let a_has = a.to_string_lossy().contains(".minecraft");
-        let b_has = b.to_string_lossy().contains(".minecraft");
-        b_has.cmp(&a_has).then(a.cmp(b))
+    // Сортируем по приоритету
+    found_folders.sort_by(|a, b| {
+        let a_priority = get_path_priority(a);
+        let b_priority = get_path_priority(b);
+        b_priority.cmp(&a_priority)
     });
-    minecraft_folders.dedup();
     
-    println!("󰝚 Найдено {} папок Minecraft", minecraft_folders.len());
+    // Удаляем дубликаты
+    found_folders.dedup();
     
-    // Выбор папки пользователем
-    select_minecraft_folder(&minecraft_folders)
+    println!("󰄬 Найдено {} папок Minecraft", found_folders.len());
+    
+    // Предлагаем выбор пользователю
+    select_folder_from_list(&found_folders)
 }
 
-/// Получение расширенного списка корневых директорий для поиска
-fn get_extended_search_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+/// Получение путей для поиска на Linux
+fn get_linux_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     
-    // Домашняя директория пользователя
     if let Some(home) = dirs::home_dir() {
-        roots.push(home.clone());
+        // Официальный лаунчер
+        paths.push(home.join(".minecraft"));
         
-        // Для Windows
-        #[cfg(target_os = "windows")]
-        {
-            roots.push(home.join("AppData").join("Roaming"));
-            roots.push(home.join("AppData").join("Local"));
-            roots.push(home.join("Documents"));
-            roots.push(home.join("OneDrive").join("Documents"));
-        }
+        // Prism Launcher
+        paths.push(home.join(".local/share/PrismLauncher/instances"));
+        paths.push(home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"));
         
-        // Для Linux
-        #[cfg(target_os = "linux")]
-        {
-            roots.push(home.join(".local").join("share"));
-        }
+        // MultiMC
+        paths.push(home.join(".local/share/multimc/instances"));
         
-        // Для macOS
-        #[cfg(target_os = "macos")]
-        {
-            roots.push(home.join("Library").join("Application Support"));
-        }
+        // ATLauncher
+        paths.push(home.join(".local/share/atlutut/instances"));
+        
+        // CurseForge
+        paths.push(home.join(".local/share/curseforge/minecraft/Instances"));
+        
+        // GDLauncher
+        paths.push(home.join(".local/share/gdlauncher/instances"));
+        
+        // TLauncher
+        paths.push(home.join(".local/share/tlauncher/instances"));
+        paths.push(home.join(".tlauncher"));
+        
+        // Просто папка .minecraft в разных местах
+        paths.push(home.clone());
+        paths.push(home.join("Games"));
+        paths.push(home.join("minecraft"));
+        paths.push(home.join("MC"));
     }
     
     // Текущая рабочая директория
     if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
+        paths.push(cwd);
     }
     
-    roots
+    paths
 }
 
-/// Рекурсивный поиск папок Minecraft
-fn find_minecraft_recursive(dir: &Path, results: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
-    if depth >= max_depth || !dir.exists() {
-        return;
-    }
+/// Рекурсивный поиск папок Minecraft в директории
+fn find_minecraft_in_directory(dir: &Path, results: &mut Vec<PathBuf>) {
+    let walker = WalkDir::new(dir)
+        .max_depth(5)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok());
     
-    // Проверяем, является ли текущая папка .minecraft
-    if let Some(dir_name) = dir.file_name() {
-        let dir_name_str = dir_name.to_string_lossy().to_lowercase();
+    for entry in walker {
+        let path = entry.path();
         
-        if dir_name_str.contains("minecraft") || 
-           dir_name_str == ".minecraft" ||
-           dir_name_str == "minecraft" ||
-           dir_name_str.contains("mc") {
-            
-            if is_valid_minecraft_folder(dir) {
-                if !results.contains(&dir.to_path_buf()) {
-                    results.push(dir.to_path_buf());
-                }
-            }
-        }
-    }
-    
-    // Рекурсивно обходим поддиректории
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let skip_dirs = ["node_modules", ".git", ".idea", "target", "build", "__pycache__"];
-                if let Some(name) = path.file_name() {
-                    let name_str = name.to_string_lossy().to_lowercase();
-                    if skip_dirs.contains(&name_str.as_str()) || name_str.starts_with('.') {
-                        continue;
+        if path.is_dir() {
+            // Проверяем, является ли это папкой Minecraft
+            if is_minecraft_folder(path) {
+                // Находим корневую папку Minecraft
+                if let Some(root_path) = find_minecraft_root(path) {
+                    if !results.contains(&root_path) {
+                        results.push(root_path);
                     }
                 }
-                
-                find_minecraft_recursive(&path, results, depth + 1, max_depth);
             }
         }
     }
 }
 
-/// Проверка, является ли папка валидной папкой Minecraft
-fn is_valid_minecraft_folder(path: &Path) -> bool {
-    let common_dirs = [
-        "saves", "resourcepacks", "shaderpacks", 
-        "mods", "versions", "assets", "logs",
-        "config", "screenshots"
-    ];
+/// Поиск корневой папки Minecraft
+fn find_minecraft_root(start_path: &Path) -> Option<PathBuf> {
+    let mut current = start_path.to_path_buf();
     
-    let common_files = [
-        "options.txt", "launcher_profiles.json"
-    ];
-    
-    // Проверяем наличие хотя бы одной типичной папки
-    for dir in &common_dirs {
-        if path.join(dir).exists() {
-            return true;
+    // Поднимаемся вверх, пока не найдем .minecraft или папку с модами
+    while let Some(parent) = current.parent() {
+        if is_minecraft_folder(&current) {
+            return Some(current);
         }
+        current = parent.to_path_buf();
     }
     
-    // Или наличие типичных файлов
-    for file in &common_files {
-        if path.join(file).exists() {
-            return true;
-        }
-    }
-    
-    false
+    None
 }
 
-/// Добавление расширенного списка стандартных путей
-fn add_standard_paths_extended(folders: &mut Vec<PathBuf>) {
-    let standard_paths = vec![
-        dirs::data_dir().map(|p| p.join(".minecraft")),
-        dirs::config_dir().map(|p| p.join(".minecraft")),
-        dirs::home_dir().map(|p| p.join(".minecraft")),
-        
-        #[cfg(target_os = "windows")]
-        dirs::home_dir().map(|p| p.join("AppData").join("Roaming").join(".minecraft")),
-        
-        #[cfg(target_os = "macos")]
-        dirs::home_dir().map(|p| p.join("Library").join("Application Support").join("minecraft")),
-    ];
+/// Проверка, является ли папка папкой Minecraft
+fn is_minecraft_folder(path: &Path) -> bool {
+    let folder_name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     
-    for path in standard_paths.into_iter().filter_map(|p| p) {
-        if path.exists() && path.is_dir() && !folders.contains(&path) {
-            if is_valid_minecraft_folder(&path) {
-                folders.push(path);
-            }
-        }
-    }
+    // Проверка по имени папки
+    let is_named_minecraft = folder_name.contains("minecraft") || 
+                            folder_name == ".minecraft" ||
+                            folder_name.contains("instance") ||
+                            folder_name.contains("mc");
+    
+    // Проверка по содержимому
+    let has_minecraft_content = path.join("mods").exists() ||
+                               path.join("saves").exists() ||
+                               path.join("versions").exists() ||
+                               path.join("assets").exists() ||
+                               path.join("options.txt").exists() ||
+                               path.join("launcher_profiles.json").exists();
+    
+    is_named_minecraft || has_minecraft_content
 }
 
-/// Выбор папки Minecraft из найденных
-fn select_minecraft_folder(folders: &[PathBuf]) -> Option<PathBuf> {
-    let mut options: Vec<String> = folders
-        .iter()
-        .map(|p| {
-            let path_str = p.display().to_string();
-            let simplified = simplify_path_display(&path_str);
-            
-            if path_str.contains("curseforge") {
-                format!("󰝚 CurseForge: {}", simplified)
-            } else if path_str.contains("multimc") || path_str.contains("prismlauncher") {
-                format!("󰝚 MultiMC/Prism: {}", simplified)
-            } else if path_str.contains(".minecraft") {
-                format!("󰝚 Vanilla: {}", simplified)
-            } else {
-                format!("󰝚 {}", simplified)
-            }
+/// Приоритет для сортировки путей
+fn get_path_priority(path: &Path) -> i32 {
+    let path_str = path.display().to_string();
+    
+    if path_str.contains(".minecraft") { 100 }
+    else if path_str.contains("PrismLauncher") { 90 }
+    else if path_str.contains("multimc") { 80 }
+    else if path_str.contains("tlauncher") { 70 }
+    else if path_str.contains("curseforge") { 60 }
+    else if path_str.contains("instances") { 50 }
+    else if path.join("mods").exists() { 40 }
+    else { 10 }
+}
+
+/// Выбор папки из списка найденных
+fn select_folder_from_list(folders: &[PathBuf]) -> Option<PathBuf> {
+    let mut options: Vec<String> = folders.iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let display_path = simplify_path_display(path);
+            let launcher = detect_launcher_type(path);
+            format!("{}. {} [{}]", i + 1, display_path, launcher)
         })
         .collect();
     
-    options.push("󰩠 Ввести путь вручную".to_string());
+    options.push("󰒓 Ввести путь вручную".to_string());
+    options.push("󰅖 Отмена".to_string());
     
-    let choice = Select::new("󰍽 Выберите папку Minecraft:", options)
+    let choice = Select::new("󰝚 Выберите папку Minecraft:", options)
+        .with_page_size(15)
         .prompt()
         .ok()?;
     
-    // Если выбрана ручная настройка
-    if choice == "󰩠 Ввести путь вручную" {
+    if choice == "󰒓 Ввести путь вручную" {
         return ask_path_manual();
     }
     
-    // Находим выбранную папку
-    for p in folders.iter() {
-        let path_str = p.display().to_string();
-        let simplified = simplify_path_display(&path_str);
-        
-        let option_str = if path_str.contains("curseforge") {
-            format!("󰝚 CurseForge: {}", simplified)
-        } else if path_str.contains("multimc") || path_str.contains("prismlauncher") {
-            format!("󰝚 MultiMC/Prism: {}", simplified)
-        } else if path_str.contains(".minecraft") {
-            format!("󰝚 Vanilla: {}", simplified)
-        } else {
-            format!("󰝚 {}", simplified)
-        };
-        
-        if option_str == choice {
-            return Some(p.clone());
+    if choice == "󰅖 Отмена" {
+        return None;
+    }
+    
+    // Извлекаем индекс из выбора
+    if let Some(index_str) = choice.split('.').next() {
+        if let Ok(index) = index_str.parse::<usize>() {
+            if index > 0 && index <= folders.len() {
+                return Some(folders[index - 1].clone());
+            }
         }
     }
     
     None
 }
 
-/// Упрощение отображения пути для пользователя
-fn simplify_path_display(path: &str) -> String {
+/// Определение типа лаунчера по пути
+fn detect_launcher_type(path: &Path) -> &'static str {
+    let path_str = path.display().to_string();
+    
+    if path_str.contains("PrismLauncher") { "Prism" }
+    else if path_str.contains("multimc") { "MultiMC" }
+    else if path_str.contains("tlauncher") { "TLauncher" }
+    else if path_str.contains("curseforge") { "CurseForge" }
+    else if path_str.contains("atlutut") { "ATLauncher" }
+    else if path_str.contains("gdlauncher") { "GDLauncher" }
+    else if path_str.contains(".minecraft") { "Официальный" }
+    else { "Неизвестно" }
+}
+
+/// Упрощение отображения пути
+fn simplify_path_display(path: &Path) -> String {
     let home = dirs::home_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     
-    if path.starts_with(&home) {
-        format!("~{}", &path[home.len()..])
+    let path_str = path.display().to_string();
+    
+    if path_str.starts_with(&home) {
+        format!("~{}", &path_str[home.len()..])
     } else {
-        path.to_string()
+        path_str
     }
 }
 
-/// Ручной ввод пути к папке Minecraft
+/// Ручной ввод пути
 fn ask_path_manual() -> Option<PathBuf> {
-    Text::new("󰍽 Введите путь к папке Minecraft:")
-        .with_help_message("Пример: C:\\Users\\Имя\\.minecraft или /home/пользователь/.minecraft")
-        .with_autocomplete(autocomplete_minecraft_paths())
-        .prompt()
-        .ok()
-        .map(PathBuf::from)
-        .and_then(|p| {
-            let p_clone = p.clone();
-            let path = if p.is_relative() {
-                std::env::current_dir()
-                    .ok()
-                    .map(|cwd| cwd.join(p_clone))
-                    .unwrap_or(p)
-            } else {
-                p
-            };
-            
-            if path.exists() && path.is_dir() {
-                if is_valid_minecraft_folder(&path) {
-                    Some(path)
-                } else {
-                    let use_anyway = Confirm::new("󰍽 Эта папка не похожа на Minecraft. Использовать всё равно?")
-                        .with_default(false)
-                        .prompt()
-                        .unwrap_or(false);
-                    
-                    if use_anyway {
-                        Some(path)
-                    } else {
-                        ask_path_manual()
-                    }
-                }
-            } else {
-                let try_again = Confirm::new("󰍽 Папка не существует. Попробовать снова?")
-                    .with_default(true)
-                    .prompt()
-                    .unwrap_or(false);
-                
-                if try_again {
-                    ask_path_manual()
-                } else {
-                    None
-                }
-            }
-        })
-}
-
-/// Автодополнение путей для ручного ввода
-fn autocomplete_minecraft_paths() -> impl inquire::Autocomplete {
-    #[derive(Clone)]
-    struct MinecraftPathCompleter;
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    print_banner();
     
-    impl inquire::Autocomplete for MinecraftPathCompleter {
-        fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-            let mut suggestions = Vec::new();
+    let path = Text::new("󰝚 Введите путь к папке Minecraft:")
+        .with_help_message("Пример: /home/user/.minecraft или /home/user/Games/MC")
+        .prompt()
+        .ok()?;
+    
+    let path_buf = PathBuf::from(&path);
+    
+    if path_buf.exists() && path_buf.is_dir() {
+        if is_minecraft_folder(&path_buf) {
+            return Some(path_buf);
+        } else {
+            let use_anyway = Confirm::new("󰝚 Эта папка не похожа на папку Minecraft. Использовать её?")
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
             
-            let standard_paths = vec![
-                "~/.minecraft",
-                "~/AppData/Roaming/.minecraft",
-                "C:\\Users\\%USERNAME%\\.minecraft",
-                "/home/%USER%/.minecraft",
-            ];
-            
-            for path in standard_paths {
-                if path.contains(input) || input.is_empty() {
-                    suggestions.push(path.replace("%USERNAME%", &whoami::username())
-                        .replace("%USER%", &whoami::username()));
-                }
+            if use_anyway {
+                return Some(path_buf);
+            } else {
+                return ask_path_manual();
             }
-            
-            Ok(suggestions)
         }
+    } else {
+        let create = Confirm::new("󰝚 Папка не существует. Создать?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false);
         
-        fn get_completion(
-            &mut self,
-            _input: &str,
-            highlighted_suggestion: Option<String>,
-        ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
-            match highlighted_suggestion {
-                Some(s) => Ok(inquire::autocompletion::Replacement::Some(s)),
-                None => Ok(inquire::autocompletion::Replacement::None),
+        if create {
+            if let Err(e) = fs::create_dir_all(&path_buf) {
+                println!("󰅖 Ошибка создания папки: {}", e);
+                return ask_path_manual();
             }
+            return Some(path_buf);
+        } else {
+            return ask_path_manual();
         }
     }
-    
-    MinecraftPathCompleter
 }
 
 /// Выбор экземпляра/папки для установки модов
 pub fn select_instance(minecraft_path: &Path) -> Option<PathBuf> {
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    print_banner();
+    
     // Возможные пути к папкам с модами
     let possible_mods_paths = vec![
-        minecraft_path.join("mods"),                    // Прямая папка mods
-        minecraft_path.join("minecraft").join("mods"),  // Внутри minecraft
-        minecraft_path.join(".minecraft").join("mods"), // Внутри .minecraft
+        minecraft_path.join("mods"),
+        minecraft_path.join("minecraft").join("mods"),
+        minecraft_path.join(".minecraft").join("mods"),
     ];
     
     let mut available_paths = Vec::new();
@@ -389,14 +374,14 @@ pub fn select_instance(minecraft_path: &Path) -> Option<PathBuf> {
     // Проверяем каждый возможный путь
     for path in possible_mods_paths {
         if path.exists() {
-            available_paths.push((path.clone(), "Существующая папка"));
+            available_paths.push(path.clone());
         }
     }
     
     // Если ничего не найдено, предлагаем создать папку mods
     if available_paths.is_empty() {
         let mods_path = minecraft_path.join("mods");
-        let create_mods = Confirm::new("󰍽 Не найдено папки mods. Создать в текущей директории?")
+        let create_mods = Confirm::new("󰝚 Папка mods не найдена. Создать в текущей директории?")
             .with_default(true)
             .prompt()
             .unwrap_or(false);
@@ -407,32 +392,25 @@ pub fn select_instance(minecraft_path: &Path) -> Option<PathBuf> {
             }
             return Some(mods_path);
         }
-        
         return None;
     }
     
     // Если только один вариант, выбираем его
     if available_paths.len() == 1 {
-        let (path, _) = &available_paths[0];
-        return Some(path.clone());
+        return Some(available_paths[0].clone());
     }
     
     // Предлагаем выбор пользователю
-    let options: Vec<String> = available_paths
-        .iter()
-        .map(|(path, description)| {
-            format!("󰝚 {} - {}", path.display(), description)
-        })
+    let options: Vec<String> = available_paths.iter()
+        .map(|path| format!("󰝚 {}", path.display()))
         .collect();
     
-    let choice = Select::new("󰍽 Выберите куда установить моды:", options)
+    let choice = Select::new("󰝚 Выберите папку для установки модов:", options)
         .prompt()
         .ok()?;
     
-    for (path, description) in &available_paths {
-        let option_str = format!("󰝚 {} - {}", path.display(), description);
-        
-        if option_str == choice {
+    for path in &available_paths {
+        if format!("󰝚 {}", path.display()) == choice {
             return Some(path.clone());
         }
     }
@@ -440,14 +418,18 @@ pub fn select_instance(minecraft_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Выбор типа сборки (клиент/сервер)
+/// Выбор типа сборки (клиентская или серверная)
 pub fn select_build_type() -> Option<String> {
+    let term = Term::stdout();
+    let _ = term.clear_screen();
+    print_banner();
+    
     let options = vec![
         "󰌌 Клиентская сборка",
         "󰑓 Серверная сборка",
     ];
 
-    Select::new("󰍽 Выберите тип сборки для установки:", options)
+    Select::new("󰝚 Выберите тип сборки для установки:", options)
         .prompt()
         .ok()
         .map(|s| s.to_string())
